@@ -1,0 +1,20 @@
+[package]
+name = "qdrant-embedding-backend-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.36", features = ["full"] }
+qdrant-client = "1.8.0"
+anyhow = "1.0"
+image = "0.24"
+walkdir = "2.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+ort = { version = "1.16.2", features = ["load-dynamic"] }
+ndarray = "0.15"
+dotenv = "0.15"
+rayon = "1.10"
+num_cpus = "1.16"
