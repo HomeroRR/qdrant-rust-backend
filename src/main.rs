@@ -1,15 +1,9 @@
 use anyhow::{Context, Result};
-use qdrant_client::{
-    qdrant::{
-        vectors_config::Config as VectorConfigType, CreateCollection, Distance, VectorParams,
-        VectorsConfig,
-    },
-    Qdrant,
-};
-
 use dotenv::dotenv;
+use fastembed::{ImageEmbedding, ImageEmbeddingModel, ImageInitOptions};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::{
+    collections::HashMap,
     env,
     path::PathBuf,
     time::{Duration, Instant},
@@ -17,8 +11,17 @@ use std::{
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
 
+use qdrant_client::{
+    qdrant::{
+        vectors_config::Config as VectorConfigType, CreateCollection, Distance, PointId,
+        PointStruct, UpsertPointsBuilder, Value as QdrantValue, VectorParams, Vectors,
+        VectorsConfig,
+    },
+    Qdrant,
+};
+
 const COLLECTION_NAME: &str = "image_embeddings_rust";
-const VECTOR_SIZE: u64 = 768; // CLIP embedding size (ViT-L/14)
+const VECTOR_SIZE: u64 = 512; // CLIP embedding size (Qdrant/clip-ViT-B-32-vision)
 const OPTIMAL_BATCH_SIZE: usize = 100; // Match Python's batch size for fair comparison
 
 async fn verify_collection_count(client: &Qdrant, expected_count: Option<u64>) -> Result<u64> {
@@ -125,9 +128,96 @@ fn collect_image_paths(image_dir: &str) -> Result<Vec<PathBuf>> {
     }
     Ok(image_paths)
 }
-async fn process_images(_client: &Qdrant, image_dir: &str) -> Result<()> {
+
+fn create_points(
+    file_names: &Vec<&str>,
+    embeddings: &Vec<Vec<f32>>,
+    next_point_id: &mut u64,
+    points: &mut Vec<PointStruct>,
+) -> Result<()> {
+    info!("Initial collection count: {}", next_point_id);
+
+    // Initialize CLIP model
+    for (&file_name, embedding) in file_names.iter().zip(embeddings.iter()) {
+        // Verify embedding vector
+        if embedding.len() != VECTOR_SIZE as usize {
+            error!(
+                "Invalid embedding size for {}: expected {}, got {}",
+                file_name,
+                VECTOR_SIZE,
+                embedding.len()
+            );
+            continue;
+        }
+
+        let mut payload = HashMap::<String, QdrantValue>::new();
+
+        payload.insert(
+            "filename".to_string(),
+            QdrantValue {
+                kind: Some(qdrant_client::qdrant::value::Kind::StringValue(
+                    file_name.to_string(),
+                )),
+            },
+        );
+
+        let point = PointStruct {
+            id: Some(PointId::from(*next_point_id)),
+            payload,
+            vectors: Some(Vectors {
+                vectors_options: Some(qdrant_client::qdrant::vectors::VectorsOptions::Vector(
+                    qdrant_client::qdrant::Vector {
+                        data: embedding.clone(),
+                        indices: None,       // No sparse indices
+                        vector: None,        // Not using legacy vector field
+                        vectors_count: None, // Not using multiple vectors
+                    },
+                )),
+            }),
+            ..Default::default()
+        };
+
+        points.push(point);
+
+        *next_point_id += 1;
+    }
+    Ok(())
+}
+
+async fn verify_upsert(
+    client: &Qdrant,
+    expected_count: u64,
+    points_len: usize,
+    chunk_idx: usize,
+    chunks_len: usize,
+) -> Result<()> {
+    let new_count = verify_collection_count(client, Some(expected_count)).await?;
+
+    if new_count != expected_count {
+        error!(
+            "Upsert verification failed - Expected: {}, Actual: {}",
+            expected_count, new_count
+        );
+    } else {
+        info!(
+            "Successfully upserted {} points in batch {}/{}",
+            points_len,
+            chunk_idx + 1,
+            chunks_len
+        );
+    }
+
+    Ok(())
+}
+
+async fn process_images(client: &Qdrant, image_dir: &str, model: &ImageEmbedding) -> Result<()> {
     let start_time = Instant::now();
     info!("Starting image processing from directory: {}", image_dir);
+
+    // Get initial collection count
+    let initial_count = verify_collection_count(client, None).await?;
+    info!("Initial collection count: {}", initial_count);
+    let mut next_point_id = initial_count as u64;
 
     // Collect image paths
     let image_paths = collect_image_paths(image_dir)?;
@@ -135,11 +225,38 @@ async fn process_images(_client: &Qdrant, image_dir: &str) -> Result<()> {
     // Process images in optimized batches
     let chunks: Vec<_> = image_paths.chunks(OPTIMAL_BATCH_SIZE).collect();
     let mut total_embedding_time = Duration::new(0, 0);
-    for chunk in &chunks {
-        let _images: Vec<&str> = chunk.iter().map(|p| p.to_str().unwrap()).collect();
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        let images: Vec<&str> = chunk.iter().map(|p| p.to_str().unwrap()).collect();
         let embedding_start = Instant::now();
+        // Generate embeddings with the OPTIMAL_BATCH_SIZE 100
+        let embeddings = model.embed(images, Some(OPTIMAL_BATCH_SIZE))?;
         let batch_embedding_time = embedding_start.elapsed();
         total_embedding_time += batch_embedding_time;
+
+        // Create points for batch with verification
+        let file_names: Vec<&str> = chunk
+            .iter()
+            .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"))
+            .collect();
+        let points_len = file_names.len();
+        let mut points: Vec<PointStruct> = Vec::with_capacity(points_len);
+        create_points(&file_names, &embeddings, &mut next_point_id, &mut points)?;
+
+        // Verify points before upserting
+        info!(
+            "Preparing to upsert {} points for batch {}/{}",
+            points_len, // -> Points length: 100
+            chunk_idx + 1,
+            chunks.len()
+        );
+
+        // Upsert points to Qdrant
+        client
+            .upsert_points(UpsertPointsBuilder::new(COLLECTION_NAME, points))
+            .await?;
+
+        // Verify the update was successful
+        verify_upsert(client, next_point_id, points_len, chunk_idx, chunks.len()).await?;
     }
 
     let total_time = start_time.elapsed();
@@ -182,8 +299,13 @@ async fn main() -> Result<()> {
     // Initialize collection
     init_qdrant_collection(&client).await?;
 
+    // Load the model
+    let model = ImageEmbedding::try_new(
+        ImageInitOptions::new(ImageEmbeddingModel::ClipVitB32).with_show_download_progress(true),
+    )?;
+
     // Process images
-    process_images(&client, "images").await?;
+    process_images(&client, "images", &model).await?;
 
     info!("Image processing and embedding completed successfully!");
     Ok(())
