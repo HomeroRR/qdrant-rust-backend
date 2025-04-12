@@ -1,10 +1,9 @@
-use anyhow::{Context, Result};
-use dotenv::dotenv;
-use fastembed::{ImageEmbedding, ImageEmbeddingModel, ImageInitOptions};
+use anyhow::Result;
+use fastembed::{ImageEmbeddingModel, ImageInitOptions};
+use pyo3::prelude::*;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::{
     collections::HashMap,
-    env,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -46,7 +45,7 @@ async fn verify_collection_count(client: &Qdrant, expected_count: Option<u64>) -
     Ok(points_count)
 }
 
-async fn init_qdrant_collection(client: &Qdrant) -> Result<()> {
+pub async fn init_qdrant_collection(client: &Qdrant) -> Result<()> {
     let collections = client.list_collections().await?;
 
     // Check if collection exists
@@ -91,7 +90,7 @@ async fn init_qdrant_collection(client: &Qdrant) -> Result<()> {
     Ok(())
 }
 
-async fn verify_qdrant_connection(client: &Qdrant) -> Result<()> {
+pub async fn verify_qdrant_connection(client: &Qdrant) -> Result<()> {
     match client.health_check().await {
         Ok(_) => {
             info!("Successfully connected to Qdrant server");
@@ -210,7 +209,11 @@ async fn verify_upsert(
     Ok(())
 }
 
-async fn process_images(client: &Qdrant, image_dir: &str, model: &ImageEmbedding) -> Result<()> {
+pub async fn process_images(
+    client: &Qdrant,
+    image_dir: &str,
+    model: &ImageEmbedding,
+) -> Result<()> {
     let start_time = Instant::now();
     info!("Starting image processing from directory: {}", image_dir);
 
@@ -229,7 +232,7 @@ async fn process_images(client: &Qdrant, image_dir: &str, model: &ImageEmbedding
         let images: Vec<&str> = chunk.iter().map(|p| p.to_str().unwrap()).collect();
         let embedding_start = Instant::now();
         // Generate embeddings with the OPTIMAL_BATCH_SIZE 100
-        let embeddings = model.embed(images, Some(OPTIMAL_BATCH_SIZE))?;
+        let embeddings = model.embed(images, OPTIMAL_BATCH_SIZE)?;
         let batch_embedding_time = embedding_start.elapsed();
         total_embedding_time += batch_embedding_time;
 
@@ -275,38 +278,53 @@ async fn process_images(client: &Qdrant, image_dir: &str, model: &ImageEmbedding
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Load environment variables from .env file
-    dotenv().ok();
+pub struct ImageEmbedding {
+    model: fastembed::ImageEmbedding,
+}
 
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+impl ImageEmbedding {
+    pub fn new(model_name: &str) -> Result<Self> {
+        let embedding_model = match model_name {
+            "Qdrant/clip-ViT-B-32-vision" => ImageEmbeddingModel::ClipVitB32,
+            "Qdrant/resnet50-onnx" => ImageEmbeddingModel::Resnet50,
+            "Qdrant/Unicom-ViT-B-16" => ImageEmbeddingModel::UnicomVitB16,
+            "Qdrant/Unicom-ViT-B-32" => ImageEmbeddingModel::UnicomVitB32,
+            "nomic-ai/nomic-embed-vision-v1.5" => ImageEmbeddingModel::NomicEmbedVisionV15,
+            _ => return Err(anyhow::anyhow!("Invalid model code")),
+        };
+        let model = fastembed::ImageEmbedding::try_new(
+            ImageInitOptions::new(embedding_model).with_show_download_progress(true),
+        )?;
+        Ok(Self { model })
+    }
 
-    // Get Qdrant configuration from environment variables
-    let qdrant_url = env::var("QDRANT_URL").context("QDRANT_URL environment variable not set")?;
-    let qdrant_api_key =
-        env::var("QDRANT_API_KEY").context("QDRANT_API_KEY environment variable not set")?;
+    pub fn embed(&self, images: Vec<&str>, batch_size: usize) -> Result<Vec<Vec<f32>>> {
+        self.model.embed(images, Some(batch_size))
+    }
+}
 
-    // Initialize Qdrant client
-    let client = Qdrant::from_url(&qdrant_url)
-        .api_key(qdrant_api_key)
-        .build()?;
+#[pyclass(name = "ImageEmbedding")]
+pub struct PyImageEmbedding {
+    image_embedding: ImageEmbedding,
+}
 
-    // Verify connection to Qdrant
-    verify_qdrant_connection(&client).await?;
+#[pymethods]
+impl PyImageEmbedding {
+    #[new]
+    pub fn new(model_name: &str) -> Self {
+        let image_embedding = ImageEmbedding::new(model_name).unwrap();
+        Self { image_embedding }
+    }
 
-    // Initialize collection
-    init_qdrant_collection(&client).await?;
+    #[pyo3(signature = (images, batch_size=1))]
+    pub fn embed(&self, images: Vec<String>, batch_size: usize) -> Vec<Vec<f32>> {
+        let images: Vec<&str> = images.iter().map(|s| s.as_str()).collect();
+        self.image_embedding.embed(images, batch_size).unwrap()
+    }
+}
 
-    // Load the model
-    let model = ImageEmbedding::try_new(
-        ImageInitOptions::new(ImageEmbeddingModel::ClipVitB32).with_show_download_progress(true),
-    )?;
-
-    // Process images
-    process_images(&client, "images", &model).await?;
-
-    info!("Image processing and embedding completed successfully!");
+#[pymodule]
+fn qdrant_embedding(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyImageEmbedding>()?;
     Ok(())
 }

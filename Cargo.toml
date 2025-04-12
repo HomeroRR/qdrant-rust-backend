@@ -19,3 +19,7 @@ dotenv = "0.15"
 rayon = "1.10"
 num_cpus = "1.16"
 fastembed = "4.6.0"
+pyo3 = "0.24.0"
+
+[[example]]
+name = "upload_images"
