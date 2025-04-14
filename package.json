@@ -1,0 +1,29 @@
+{
+    "name": "qdrant-embedding",
+    "version": "0.1.0",
+    "description": "Compute embeddings for Qdrant",
+    "main": "index.node",
+    "scripts": {
+        "build": "cargo-cp-artifact -nc index.node -- cargo build --message-format=json-render-diagnostics",
+        "install": "npm run build",
+        "test": "cargo test"
+    },
+    "author": "Homero Roman",
+    "devDependencies": {
+        "cargo-cp-artifact": "^0.1"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/HomeroRR/qdrant-rust-backend.git"
+    },
+    "keywords": [
+        "Qdrant",
+        "Fastembed",
+        "Rust",
+        "Embeddings"
+    ],
+    "bugs": {
+        "url": "https://github.com/HomeroRR/qdrant-rust-backend/issues"
+    },
+    "homepage": "https://github.com/HomeroRR/qdrant-rust-backend#readme"
+}

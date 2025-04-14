@@ -1,5 +1,6 @@
 use anyhow::Result;
 use fastembed::{ImageEmbeddingModel, ImageInitOptions};
+use neon::prelude::*;
 use pyo3::prelude::*;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::{
@@ -326,5 +327,70 @@ impl PyImageEmbedding {
 #[pymodule]
 fn qdrant_embedding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImageEmbedding>()?;
+    Ok(())
+}
+
+pub struct JSImageEmbedding {
+    image_embedding: ImageEmbedding,
+}
+
+// Needed to box `ImageEmbedding` in JavaScript
+impl Finalize for JSImageEmbedding {}
+
+// Methods exposed to JavaScript
+// The `JsBox` boxed `ImageEmbedding` is expected as the `this` value on all methods except `js_new`
+impl JSImageEmbedding {
+    // Create a new instance of `ImageEmbedding` and place it inside a `JsBox`
+    // JavaScript can hold a reference to a `JsBox`, but the contents are opaque
+    fn new<'a>(mut cx: FunctionContext<'a>) -> JsResult<'a, JsBox<JSImageEmbedding>> {
+        let model_name = cx.argument::<JsString>(0)?.value(&mut cx);
+        let image_embedding =
+            ImageEmbedding::new(&model_name).or_else(|err| cx.throw_error(err.to_string()))?;
+        Ok(cx.boxed(Self { image_embedding }))
+    }
+
+    fn embed(mut cx: FunctionContext) -> JsResult<JsArray> {
+        let js_images = cx.argument::<JsArray>(0)?.to_vec(&mut cx)?;
+        let len = js_images.len();
+        let mut images = vec![];
+        for i in 0..len {
+            let image = js_images
+                .get(i)
+                .unwrap()
+                .to_string(&mut cx)
+                .unwrap()
+                .value(&mut cx);
+            images.push(image);
+        }
+        let images = images.iter().map(|s| s.as_str()).collect();
+        let batch_size = cx.argument::<JsNumber>(1)?.value(&mut cx) as usize;
+
+        // Get the `this` value as a `JsBox<JSImageEmbedding>`
+        let result = cx
+            .this::<JsBox<JSImageEmbedding>>()?
+            .image_embedding
+            .embed(images, batch_size)
+            .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        let array = JsArray::new(&mut cx, result.len());
+        for (i, s) in result.iter().enumerate() {
+            let v = JsArray::new(&mut cx, s.len());
+            for (j, f) in s.iter().enumerate() {
+                let f = cx.number(*f);
+                v.set(&mut cx, j as u32, f)?;
+            }
+            array.set(&mut cx, i as u32, v)?;
+        }
+        Ok(array)
+    }
+}
+
+#[neon::main]
+// Called once when the module is loaded
+fn main(mut cx: ModuleContext) -> NeonResult<()> {
+    // Export each of the Neon functions as part of the module
+    cx.export_function("new", JSImageEmbedding::new)?;
+    cx.export_function("embed", JSImageEmbedding::embed)?;
+
     Ok(())
 }
