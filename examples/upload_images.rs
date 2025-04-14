@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use dotenv::dotenv;
-use qdrant_embedding_backend_rust::{
+use qdrant_embedding::{
     init_qdrant_collection, process_images, verify_qdrant_connection, ImageEmbedding,
 };
 use std::env;

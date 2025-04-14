@@ -1,12 +1,12 @@
 # Image Embeddings for Qdrant
 
-This Rust library with Python bindings generates vector embeddings from images.
+This Rust library with Python and JavaScript bindings computes vector embeddings from images.
 
 The example `upload_images.rs` uses a CLIP vision model to store vector embeddings in a Qdrant vector database.
 
 The program is designed to handle batch processing of images and includes robust error handling and verification steps.
 
-## Usage
+## Usage in Python
 
 ```python
 from qdrant_embedding import ImageEmbedding
@@ -14,15 +14,34 @@ from qdrant_embedding import ImageEmbedding
 # Initialize FastEmbed models
 image_model = ImageEmbedding("Qdrant/clip-ViT-B-32-vision")
 
-# Use FastEmbed to generate text embedding
+# Use FastEmbed to generate image embeddings
 embeddings = image_model.embed(["images/1_bathroom.jpg"])
+```
+
+## Usage in JavaScript
+```javascript
+const { new: ImageEmbedding, embed } = require('./index.node');
+
+// Initialize FastEmbed models
+const imageModel = ImageEmbedding("Qdrant/clip-ViT-B-32-vision");
+
+// Use FastEmbed to generate image embeddings
+const embeddings = embed.call(imageModel, ["images/1_bathroom.jpg"], 1);
 ```
 
 ## Prerequisites
 
 - Rust toolchain >= 2021
+
+### Optional Prerequisites for Python
+
 - Python 3.8+ (pip install maturin)
 - `maturin develop` (to get Python bindings)
+
+### Optional Prerequisites for JavaScript
+
+- npm
+- `npm install` (to get JavaScript bindings)
 
 ## Dependencies
 
@@ -31,7 +50,6 @@ embeddings = image_model.embed(["images/1_bathroom.jpg"])
 anyhow = "1.0"           # Error handling
 image = "0.24"           # Image processing
 ndarray = "0.15"         # N-dimensional arrays
-ort = "1.16"            # ONNX Runtime
 qdrant-client = "1.7"    # Qdrant client
 tokio = { version = "1.0", features = ["full"] } # Async runtime
 tracing = "0.1"         # Logging
@@ -39,6 +57,7 @@ tracing-subscriber = "0.3" # Logging implementation
 walkdir = "2.4"         # Directory traversal
 fastembed = "4.6.0"     # Fastembed rust implementation
 pyo3 = "0.24.0"         # To call from Python
+neon = "1"              # To call from JavaScript
 ```
 
 ## Overview
